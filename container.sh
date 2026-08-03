@@ -11,6 +11,12 @@
 #                          clbr0 (bridge) 10.200.1.1/24  (хост)
 #                              |
 #                       iptables MASQUERADE -> внешний интерфейс хоста
+#todo:
+#
+#проброс портов
+#Seccomp - фильтрации системных вызовов
+#Cgroups v2 - ограничений по CPU, памяти, диску
+#Capabilities - тонкой настройки прав root внутри контейнера
 # ============================================================================
 set -e
 
@@ -65,7 +71,7 @@ cleanup() {
     fi
 
     # снимаем iptables-правила
-    EGRESS_IF="$(ip route show default | awk '/default/ {print $5; exit}')"
+    EGRESS_IF="$(ip -o route get 1.1.1.1 | grep -oP 'dev \K\S+')"
     if [ -n "$EGRESS_IF" ]; then
         sudo iptables -t nat -D POSTROUTING -s "$CTR_SUBNET" -o "$EGRESS_IF" -j MASQUERADE 2>/dev/null || true
         sudo iptables -D FORWARD -i "$BRIDGE_NAME" -o "$EGRESS_IF" -j ACCEPT 2>/dev/null || true
@@ -130,7 +136,7 @@ sudo nsenter -t "$CPID" -n -- ip route add default via "$CTR_GW"
 # ----------------------------------------------------------------------------
 sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null
 
-EGRESS_IF="$(ip route show default | awk '/default/ {print $5; exit}')"
+EGRESS_IF="$(ip -o route get 1.1.1.1 | grep -oP 'dev \K\S+')" # интерфейс с интернетом
 if [ -z "$EGRESS_IF" ]; then
     echo "[warn] не удалось определить внешний интерфейс хоста, NAT может не работать"
 fi
