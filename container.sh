@@ -35,7 +35,7 @@ VETH_CTR="veth-ctr0"
 # 1. Базовый Debian (debootstrap)
 # ----------------------------------------------------------------------------
 if [ -d "$BASE_DIR/bin" ]; then
-    echo "[info] base_debian уже существует. Удалите base_debian в случае обновления/поломки образа"
+    echo "[info] использую образ в $(realpath -e "./base_debian")"
 else
     sudo debootstrap --arch=amd64 bookworm "$BASE_DIR" http://deb.debian.org/debian
 fi
@@ -63,44 +63,59 @@ sudo mount -t overlay overlay \
 # ----------------------------------------------------------------------------
 CPID=""
 cleanup() {
-    echo "[info] очистка сети и окружения..."
+    echo "[info] очистка..."
 
-    # убиваем "заглушку" (sleep infinity), которая держит namespaces
+    trap - EXIT
+
     if [ -n "$CPID" ] && kill -0 "$CPID" 2>/dev/null; then
-        sudo kill -9 "$CPID" 2>/dev/null || true
+        # убиваем всех потомков (sleep, bash и т.д.)
+        pkill -TERM -P "$CPID" 2>/dev/null || true
+        sleep 0.2
+        pkill -KILL -P "$CPID" 2>/dev/null || true
+
+        # затем самого unshare
+        kill -TERM "$CPID" 2>/dev/null || true
+        sleep 0.2
+        kill -KILL "$CPID" 2>/dev/null || true
+
+        wait "$CPID" 2>/dev/null || true
     fi
 
-    # снимаем iptables-правила
-    EGRESS_IF="$(ip -o route get 1.1.1.1 | grep -oP 'dev \K\S+')"
+    EGRESS_IF="$(ip -o route get 1.1.1.1 | grep -oP 'dev \K\S+' || true)"
+
     if [ -n "$EGRESS_IF" ]; then
         sudo iptables -t nat -D POSTROUTING -s "$CTR_SUBNET" -o "$EGRESS_IF" -j MASQUERADE 2>/dev/null || true
         sudo iptables -D FORWARD -i "$BRIDGE_NAME" -o "$EGRESS_IF" -j ACCEPT 2>/dev/null || true
-        sudo iptables -D FORWARD -i "$EGRESS_IF" -o "$BRIDGE_NAME" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+        sudo iptables -D FORWARD -i "$EGRESS_IF" -o "$BRIDGE_NAME" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
     fi
 
     sudo ip link del "$VETH_HOST" 2>/dev/null || true
     sudo ip link del "$BRIDGE_NAME" 2>/dev/null || true
 
-    sudo umount "$MERGED" 2>/dev/null || true
+    mountpoint -q "$MERGED" && sudo umount -l "$MERGED" || true
 }
 trap cleanup EXIT
-
+# ----------------------------------------------------------------------------
+# копируем Init-script
+# ----------------------------------------------------------------------------
+NS_INIT="$OVERLAY_DIR/ns-init.sh"
+python3 -c "open('$NS_INIT','w').write(open('ns-init.sh','r').read().replace('MERGED_PATH',str('$MERGED')));"
+chmod +x "$NS_INIT"
 # ----------------------------------------------------------------------------
 # Запускаем namespaces фоновым процессом-заглушкой (sleep infinity),
 #    чтобы иметь PID для настройки сети снаружи ДО входа в контейнер.
 # ----------------------------------------------------------------------------
-unshare \
-    --mount --pid --cgroup --net --uts --ipc \
-    --fork --user --map-root-user --mount-proc \
-    --root "$MERGED" --wd / \
-    /bin/sleep infinity &
-CPID=$!
 
-# ждём появления netns у процесса
-for i in $(seq 1 50); do
-    [ -e "/proc/$CPID/ns/net" ] && break
-    sleep 0.1
-done
+sudo unshare \
+    --mount --cgroup --net --uts --ipc \
+    --fork  \
+    -- "$NS_INIT" &
+PID=$!
+sleep 0.2
+CPID=$(pstree -lp $PID | grep -oP 'sleep\(\K[0-9]+')
+echo "[info] CPID=$CPID"
+sleep 0.1
+
 
 # ----------------------------------------------------------------------------
 # Bridge на хосте
@@ -155,7 +170,7 @@ echo "[info] сеть готова: контейнер ${CTR_IP} -> мост ${B
 # ----------------------------------------------------------------------------
 # Заходим в контейнер интерактивным bash (те же namespaces + chroot)
 # ----------------------------------------------------------------------------
-sudo nsenter -m -u -i -n -p  -t "$CPID" -- env \
+sudo nsenter -m -u -i -n -p  -t "$CPID" -- env -i \
     HOME=/root \
     USER=root \
     LOGNAME=root \
