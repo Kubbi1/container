@@ -16,6 +16,11 @@ MEM_LIMIT=$((512*1024*1024))
 CPU_MAX="50000 100000"
 PID_LIMIT=128
 # PORT FORWARDING
+PORT_FORWARD=(
+#    "80"
+#    "1337"
+#    "22"
+)
 # ----------------------------------------------------------------------------
 # ----------------------------------------------------------------------------
 # ----------------------------------------------------------------------------
@@ -25,6 +30,7 @@ BRIDGE_NAME="clbr0"
 BRIDGE_IP="10.200.1.1/24"
 CTR_SUBNET="10.200.1.0/24"
 CTR_IP="10.200.1.2/24"
+CTR_ADDR="${CTR_IP%/*}"
 CTR_GW="10.200.1.1"
 VETH_HOST="veth-host0"
 VETH_CTR="veth-ctr0"
@@ -55,6 +61,7 @@ MERGED="$(realpath -e "$OVERLAY_DIR/merged")"
 sudo mount -t overlay overlay \
     -o lowerdir="$(realpath -e "$BASE_DIR")",upperdir="$(realpath -e "$OVERLAY_DIR/upper")",workdir="$(realpath -e "$OVERLAY_DIR/work")" \
     "$MERGED"
+
 # ----------------------------------------------------------------------------
 # Seccomp - компилируем скрипт для фильтрации системных вызовов
 # ----------------------------------------------------------------------------
@@ -74,6 +81,11 @@ cleanup() {
     echo "[info] очистка..."
     trap - EXIT
 
+    for PID in "${SOCAT_PIDS[@]}"; do
+        kill "$PID" 2>/dev/null || true
+    done
+
+sudo iptables -D FORWARD -i "$BRIDGE_NAME" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
     if [ -n "$CPID" ] && kill -0 "$CPID" 2>/dev/null; then
         # убиваем всех потомков
         pkill -TERM -P "$CPID" 2>/dev/null || true
@@ -180,10 +192,30 @@ sudo iptables -C FORWARD -i "$EGRESS_IF" -o "$BRIDGE_NAME" -m state --state RELA
 sudo iptables -A FORWARD -i "$EGRESS_IF" -o "$BRIDGE_NAME" -m state --state RELATED,ESTABLISHED -j ACCEPT
 
 echo "[info] сеть готова: контейнер ${CTR_IP} -> мост ${BRIDGE_IP} -> NAT через ${EGRESS_IF}"
+#---------------------------------------------------------------------
+# PORT FORWARDING на localhost
+# ---------------------------------------------------------------------
+# localhost -> container port forwarding
 
-# ----------------------------------------------------------------------------
+#---------------------------------------------------------------------
+# PORT FORWARDING localhost -> container
+#---------------------------------------------------------------------
+
+SOCAT_PIDS=()
+
+for PORT in "${PORT_FORWARD[@]}"; do
+
+    sudo socat TCP-LISTEN:"$PORT",bind=127.0.0.1,reuseaddr,fork TCP:"$CTR_ADDR":"$PORT" &
+
+    SOCAT_PIDS+=($!)
+
+    echo "[info] localhost:$PORT -> $CTR_ADDR:$PORT"
+
+done
+
+#---------------------------------------------------------------------
 # Заходим в контейнер интерактивным bash (те же namespaces + chroot)
-# ----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
 sudo nsenter -m -u -i -n -p  -t "$CPID" -- env -i \
     HOME=/root \
     USER=root \

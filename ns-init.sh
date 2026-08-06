@@ -20,10 +20,8 @@ cd /
 
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys 2>/dev/null || true
-mount -t tmpfs tmpfs /dev 2>/dev/null || true
 mkdir -p /dev/pts /dev/shm
 mount -t devpts devpts /dev/pts 2>/dev/null || true
-
 # отмнотируем старый корень
 umount -l /oldroot
 rmdir /oldroot
