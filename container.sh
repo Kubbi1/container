@@ -1,16 +1,5 @@
 #!/bin/bash
 # ============================================================================
-# Rootless-контейнер (debootstrap + overlayfs + unshare) с сетью:
-#   veth <-> bridge (host) <-> NAT (iptables MASQUERADE) <-> внешний мир
-#
-# Топология:
-#   [eth0 в контейнере] 10.200.1.2/24
-#            |
-#         veth-ctr0 <---> veth-host0
-#                              |
-#                          clbr0 (bridge) 10.200.1.1/24  (хост)
-#                              |
-#                       iptables MASQUERADE -> внешний интерфейс хоста
 #todo:
 #
 #проброс портов
@@ -19,10 +8,19 @@
 #Capabilities - тонкой настройки прав root внутри контейнера
 # ============================================================================
 set -e
-
+# ----------------------------------------------------------------------------
+# ------------------------------CONFIG----------------------------------------
+# ----------------------------------------------------------------------------
+# CGROUPS
+MEM_LIMIT=$((512*1024*1024))
+CPU_MAX="50000 100000"
+PID_LIMIT=128
+# PORT FORWARDING
+# ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 BASE_DIR="./base_debian"
 OVERLAY_DIR="./overlay"
-
 BRIDGE_NAME="clbr0"
 BRIDGE_IP="10.200.1.1/24"
 CTR_SUBNET="10.200.1.0/24"
@@ -32,7 +30,7 @@ VETH_HOST="veth-host0"
 VETH_CTR="veth-ctr0"
 
 # ----------------------------------------------------------------------------
-# 1. Базовый Debian (debootstrap)
+# Базовый Debian (debootstrap)
 # ----------------------------------------------------------------------------
 if [ -d "$BASE_DIR/bin" ]; then
     echo "[info] использую образ в $(realpath -e "./base_debian")"
@@ -49,7 +47,7 @@ nameserver 8.8.8.8
 EOF
 
 # ----------------------------------------------------------------------------
-# 2. OverlayFS
+# mount OverlayFS
 # ----------------------------------------------------------------------------
 mkdir -p "$(realpath -m "$OVERLAY_DIR")"/{upper,work,merged}
 MERGED="$(realpath -e "$OVERLAY_DIR/merged")"
@@ -57,26 +55,32 @@ MERGED="$(realpath -e "$OVERLAY_DIR/merged")"
 sudo mount -t overlay overlay \
     -o lowerdir="$(realpath -e "$BASE_DIR")",upperdir="$(realpath -e "$OVERLAY_DIR/upper")",workdir="$(realpath -e "$OVERLAY_DIR/work")" \
     "$MERGED"
-
 # ----------------------------------------------------------------------------
-# 3 cleanup
+# Seccomp - компилируем скрипт для фильтрации системных вызовов
+# ----------------------------------------------------------------------------
+if ! dpkg -s libseccomp-dev >/dev/null 2>&1; then
+    echo "[info] Installing libseccomp-dev..."
+    sudo apt update
+    sudo apt install -y libseccomp-dev
+fi
+gcc seccomp.c -lseccomp -o seccomp-loader
+cp seccomp-loader "$MERGED/usr/local/bin/"
+chmod +x "$MERGED/usr/local/bin/seccomp-loader"
+# ----------------------------------------------------------------------------
+# cleanup
 # ----------------------------------------------------------------------------
 CPID=""
 cleanup() {
     echo "[info] очистка..."
-
     trap - EXIT
 
     if [ -n "$CPID" ] && kill -0 "$CPID" 2>/dev/null; then
-        # убиваем всех потомков (sleep, bash и т.д.)
+        # убиваем всех потомков
         pkill -TERM -P "$CPID" 2>/dev/null || true
         sleep 0.2
         pkill -KILL -P "$CPID" 2>/dev/null || true
-
-        # затем самого unshare
+        sleep 0.1
         kill -TERM "$CPID" 2>/dev/null || true
-        sleep 0.2
-        kill -KILL "$CPID" 2>/dev/null || true
 
         wait "$CPID" 2>/dev/null || true
     fi
@@ -91,7 +95,7 @@ cleanup() {
 
     sudo ip link del "$VETH_HOST" 2>/dev/null || true
     sudo ip link del "$BRIDGE_NAME" 2>/dev/null || true
-
+    sudo rmdir "/sys/fs/cgroup/container-demo" 2>/dev/null || true
     mountpoint -q "$MERGED" && sudo umount -l "$MERGED" || true
 }
 trap cleanup EXIT
@@ -106,15 +110,25 @@ chmod +x "$NS_INIT"
 #    чтобы иметь PID для настройки сети снаружи ДО входа в контейнер.
 # ----------------------------------------------------------------------------
 
-sudo unshare \
+unshare \
     --mount --cgroup --net --uts --ipc \
-    --fork  \
+    --fork --pid --user --map-root-user  \
     -- "$NS_INIT" &
 PID=$!
 sleep 0.2
 CPID=$(pstree -lp $PID | grep -oP 'sleep\(\K[0-9]+')
 echo "[info] CPID=$CPID"
 sleep 0.1
+# ----------------------------------------------------------------------------
+# Cgroups
+# ----------------------------------------------------------------------------
+
+CG="/sys/fs/cgroup/container-demo"
+sudo mkdir -p "$CG"
+sudo bash -c "echo $MEM_LIMIT > $CG/memory.max"
+sudo bash -c "echo '$CPU_MAX' > $CG/cpu.max"
+sudo bash -c "echo $PID_LIMIT > $CG/pids.max"
+sudo bash -c "echo $CPID > $CG/cgroup.procs"
 
 
 # ----------------------------------------------------------------------------

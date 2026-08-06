@@ -13,7 +13,7 @@ mount --bind "$NEWROOT" "$NEWROOT"
 
 cd "$NEWROOT"
 mkdir -p oldroot
-pivot_root . oldroot
+/usr/sbin/pivot_root . oldroot
 
 # теперь / этого mount-namespace - это то, что раньше было $NEWROOT
 cd /
@@ -27,4 +27,9 @@ mount -t devpts devpts /dev/pts 2>/dev/null || true
 # отмнотируем старый корень
 umount -l /oldroot
 rmdir /oldroot
-exec /bin/sleep infinity
+# настраиваем capabilities и уходим в sleep
+exec setpriv \
+    --bounding-set=-all \
+    --ambient-caps=-all \
+    --inh-caps=-all \
+    /usr/local/bin/seccomp-loader /bin/sleep infinity
