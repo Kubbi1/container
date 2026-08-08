@@ -4,39 +4,45 @@
 Цель проекта - разбор того, как контейнеризация устроена изнутри.
 
 ## Применённые навыки и технологии
-- **Bash-скриптинг** - оркестрация всего процесса,  cleanup,
-- **C** - написание seccomp, работа с libseccomp
-- **Сетевой стек Linux** - bridge, veth-пары, NAT/MASQUERADE и forwarding через iptables
-- **Linux namespaces** - mount, pid, net, uts, ipc, cgroup через `unshare`/`nsenter`
-- **pivot_root** для смены корня (вместо `chroot`), приватный mount propagation
-- **OverlayFS** - CoW-корень (lower/upper/work/merged)
-- **Cgroups** - лимиты памяти, CPU (`cpu.max`), числа процессов (`pids.max`)
-- **Seccomp** - фильтр syscalls, написан на C с libseccomp, компилируется в отдельный loader-бинарь
-- **Linux capabilities** - дроп через `setpriv --bounding-set`, `--no-new-privs`
-- **Сетевой стек Linux** - bridge, veth-пары, NAT/MASQUERADE и forwarding через iptables
+- **Bash-скриптинг** - оркестрация всего процесса, работа с  процессами, cleanup() и тд.
+- **C** - написание seccomp, работа с libseccomp 
+- **Сетевой стек Linux** - bridge, veth-пары, NAT/MASQUERADE и проброс портов через iptables
+- **Linux namespaces** - mount, pid, net, uts, ipc, cgroup через unshare и nsenter`
+- **pivot_root** для смены корня 
+- **OverlayFS** - copy-on-write система, как в Docker (lower/upper/work/merged)
+- **Cgroups** - лимиты памяти, CPU , числа процессов 
+- **Seccomp** - фильтр syscalls, написан на C с libseccomp
+- **Linux capabilities** - через setpriv 
 - **debootstrap** - сборка минимального Debian rootfs
 
-## Быстрый старт
+## Запуск
 
 ```bash
-bash container.sh
+└─$ bash container.sh 
+[info] использую образ в /home/user/pet/container/base_debian
+[info] FS mounted at /home/user/pet/container/overlay/merged 
+[info] CPID=2055270
+[info] сеть готова: контейнер 10.200.1.2/24 -> мост 10.200.1.1/24 -> NAT через wlo1
+[info] localhost:80 -> 10.200.1.2:80
+root@192:/# 
+
 ```
 
-Первый запуск разворачивает Debian через debootstrap, монтирует overlay, компилирует seccomp-loader, поднимает namespaces/сеть/cgroups и заводит в интерактивный bash внутри контейнера. Выход запускает `cleanup()`, где снимаются все ресурсы хоста.
+Первый запуск разворачивает Debian через debootstrap, монтирует overlay, компилирует seccomp-loader, поднимает namespaces/сеть/cgroups и заводит в интерактивный bash внутри контейнера. Выход запускает cleanup(), где снимаются  ресурсы хоста
 
 Требования: Linux с cgroups v2, sudo, пакеты debootstrap iptables iproute2 socat util-linux gcc libseccomp-dev
 
 ## Конфигурация
 
-В шапке `run.sh`: MEM_LIMIT, CPU_MAX, PID_LIMIT, PORT_FORWARD, сетевые параметры (BRIDGE_IP, CTR_IP, CTR_SUBNET)
+В шапке `container.sh`: MEM_LIMIT, CPU_MAX, PID_LIMIT, PORT_FORWARD, сетевые параметры (BRIDGE_IP, CTR_IP, CTR_SUBNET)
 
 ## Как это работает
 
-1. `debootstrap` → rootfs, overlayfs поверх него.
-2. `unshare` создаёt namespaces, внутри стартует `ns-init.sh` (`pivot_root`, монтирование `/proc /sys /dev/pts`), процесс висит как `sleep infinity` - стабильный PID для настройки снаружи.
-3. Снаружи по этому PID: cgroup + лимиты, bridge + veth в netns контейнера, адрес/маршрут через `nsenter -n`, NAT на хосте.
-4. `socat` пробрасывает порты из `PORT_FORWARD`.
-5. Вход в контейнер: `nsenter` во все namespaces + `setpriv` (capabilities, no-new-privs) + `seccomp-loader` → `exec /bin/bash`.
+1. debootstrap → rootfs, overlayFS поверх него
+2. unshare создаёt namespaces, внутри стартует ns-init.sh (pivot_root, монтирование /proc /sys /dev/pts), процесс висит как `sleep infinity` . Его PID используется для настройки снаружи
+3. Снаружи по этому PID настраиваются: cgroup + лимиты, bridge + veth , адрес/маршрут через `nsenter -n`, NAT на хосте
+4. socat пробрасывает порты из PORT_FORWARD
+5. Вход в контейнер: nsenter во все namespaces + capabilities через setpriv + seccomp-loader → `exec /bin/bash`.
 
 
 ## Можно добавить
@@ -45,6 +51,4 @@ bash container.sh
 - Rootless-режим
 - Несколько контейнеров одновременно
 
-## Дисклеймер
 
-Образовательный проект. Не для запуска недоверенного кода в продакшене - уровень изоляции ниже, чем у Docker/Podman/gVisor.
