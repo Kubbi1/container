@@ -26,8 +26,4 @@ mount -t devpts devpts /dev/pts 2>/dev/null || true
 umount -l /oldroot
 rmdir /oldroot
 # настраиваем capabilities и уходим в sleep
-exec setpriv \
-    --bounding-set=-all \
-    --ambient-caps=-all \
-    --inh-caps=-all \
-    /usr/local/bin/seccomp-loader /bin/sleep infinity
+/usr/local/bin/seccomp-loader /bin/sleep infinity

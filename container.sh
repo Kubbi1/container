@@ -215,10 +215,16 @@ done
 
 #---------------------------------------------------------------------
 # Заходим в контейнер интерактивным bash (те же namespaces + chroot)
-# ---------------------------------------------------------------------
-sudo nsenter -m -u -i -n -p  -t "$CPID" -- env -i \
-    HOME=/root \
-    USER=root \
-    LOGNAME=root \
-    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    /bin/bash
+# --------------------------------------------------------------------
+sudo nsenter -m -u -i -n -p -t "$CPID" -- \
+    setpriv \
+        --reuid=0 --regid=0 --clear-groups \
+        --bounding-set=-all,+chown,+dac_override,+fowner,+setuid,+setgid,+net_bind_service \
+        --no-new-privs \
+        --inh-caps=-all \
+        -- env -i \
+            HOME=/root \
+            USER=root \
+            LOGNAME=root \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            /usr/local/bin/seccomp-loader /bin/bash
